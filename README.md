@@ -1,6 +1,7 @@
 # causal_inference_unobserved_spatial_confounding
 Project on unobserved spatial confounding in causal inference, reproduction of "Papadogeorgou, Georgia, Choirat, Christine and Zeigler, Corwin M. (2019), "Adjusting for unmeasured spatial confounding with distance adjusted propensity score matching: Supplementary Materials", Biostatistics 20, 2, pp. 1-11".
-See github repo at: https://github.com/gpapadog/DAPSm
+Article can be found at: https://www.ncbi.nlm.nih.gov/pmc/articles/PMC6409420/
+See author's github repo (with suitable R package) at: https://github.com/gpapadog/DAPSm
 
 This project was completed as part of the "Causal Inference" (52306) course for graduate students at Tel Aviv University by Dr. Daniel Nevo, fall 2021/2022.
 The project considers simulated data and real-world data for dealing with unobserved confounders that have a geographical (spatial) property.
