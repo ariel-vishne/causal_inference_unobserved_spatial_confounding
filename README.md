@@ -6,7 +6,9 @@ The project considers simulated data and real-world data for dealing with unobse
 See full discussion in pdf (in Hebrew).
 
 The literature considers several approaches for dealing with unobserved spatial confounding
-![image](https://user-images.githubusercontent.com/18293025/174753902-3722a762-c371-4eba-b95e-3b33c8a07dab.png)
+![image](https://user-images.githubusercontent.com/18293025/174754697-9a40e5f9-b639-4052-9094-50bee7e018ff.png)
+
+
 
 The article (and hence the project) suggests a distance-adjusted propensity score (DAPSm) approach, where the unobserved confounder is adjusted for distances between observations.
 
@@ -15,8 +17,10 @@ The article (and hence the project) suggests a distance-adjusted propensity scor
 We reproduce the figures in the paper and consider further possible settings
 ![image](https://user-images.githubusercontent.com/18293025/174754351-7c1ad6fa-a4b5-4904-8a52-0fb7144cad72.png)
 
+Increased effect
 ![image](https://user-images.githubusercontent.com/18293025/174754397-f67a6127-b5a8-4f41-9713-111c0c804dde.png)
 
+No effect on Y
 ![image](https://user-images.githubusercontent.com/18293025/174754437-ceba6139-0420-414e-8220-1a4b1b0e483d.png)
 
 ![image](https://user-images.githubusercontent.com/18293025/174754477-ebff17eb-c9af-433d-a647-77a11432e345.png)
