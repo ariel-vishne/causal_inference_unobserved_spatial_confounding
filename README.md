@@ -17,15 +17,15 @@ The article (and hence the project) suggests a distance-adjusted propensity scor
 We reproduce the figures in the paper and consider further possible settings
 ![image](https://user-images.githubusercontent.com/18293025/174754201-83d76fe5-1f76-4b7d-8f18-a19b3a9cfa15.png)
 
-## Increased effect on Y
 ![image](https://user-images.githubusercontent.com/18293025/174754351-7c1ad6fa-a4b5-4904-8a52-0fb7144cad72.png)
 
-## No Effect on Y
+## Increased effect on Y
 ![image](https://user-images.githubusercontent.com/18293025/174754397-f67a6127-b5a8-4f41-9713-111c0c804dde.png)
 
-## Interaction between observed and unobserved covariates
+## No Effect on Y
 ![image](https://user-images.githubusercontent.com/18293025/174754437-ceba6139-0420-414e-8220-1a4b1b0e483d.png)
 
+## Interaction between observed and unobserved covariates
 ![image](https://user-images.githubusercontent.com/18293025/174754477-ebff17eb-c9af-433d-a647-77a11432e345.png)
 
 ## Multiple geographical confounders
