@@ -19,6 +19,7 @@ We reproduce the figures in the paper and consider further possible settings
 
 ![image](https://user-images.githubusercontent.com/18293025/174754351-7c1ad6fa-a4b5-4904-8a52-0fb7144cad72.png)
 
+![image](https://user-images.githubusercontent.com/18293025/174755718-03961476-366b-4c9a-8356-1d3b6f8b4a44.png)
 ## Increased effect on Y
 ![image](https://user-images.githubusercontent.com/18293025/174754397-f67a6127-b5a8-4f41-9713-111c0c804dde.png)
 
@@ -27,9 +28,9 @@ We reproduce the figures in the paper and consider further possible settings
 
 ## Interaction between observed and unobserved covariates
 ![image](https://user-images.githubusercontent.com/18293025/174754477-ebff17eb-c9af-433d-a647-77a11432e345.png)
+![image](https://user-images.githubusercontent.com/18293025/174754529-a81889e2-69f1-4ba4-888a-b8b2a1d00adc.png)
 
 ## Multiple geographical confounders
-![image](https://user-images.githubusercontent.com/18293025/174754529-a81889e2-69f1-4ba4-888a-b8b2a1d00adc.png)
 
 ![image](https://user-images.githubusercontent.com/18293025/174754575-2c59f678-de20-471e-94b8-4e96ae545b55.png)
 
