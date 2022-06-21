@@ -1,0 +1,36 @@
+---
+title: "Causal Inference"
+output: html_notebook
+---
+
+In case packages are not installed:
+```{r}
+install.packages("devtools")
+devtools::install_github("gpapadog/DAPSm")
+```
+
+
+
+```{r}
+data <- toyData2
+toyData2$prop.scores <- glm(Z ~ X1 + X2 + X3 + X4, family = binomial,
+                            data = toyData2)$fitted.values
+daps <- DAPSest(toyData2, out.col = 2, trt.col = 1, caliper = 0.3,
+                weight = 0.7, coords.columns = c(4, 5),
+                pairsRet = TRUE, cov.cols = 6:9, cutoff = 0.1,
+                coord_dist = TRUE, caliper_type = 'DAPS',
+                matching_algorithm = 'greedy')
+bal <- CalcDAPSWeightBalance(toyData2, weights = seq(0, 1, length.out = 40),
+                             cov.cols = 6:9, trt.col = 1,
+                             coords.columns = c(4, 5), caliper = 0.3,
+                             matching_algorithm = 'greedy')
+PlotWeightBalance(bal$balance, weights = seq(0, 1, length.out = 40), cutoff = 0.15)
+
+
+```
+
+Add a new chunk by clicking the *Insert Chunk* button on the toolbar or by pressing *Ctrl+Alt+I*.
+
+When you save the notebook, an HTML file containing the code and output will be saved alongside it (click the *Preview* button or press *Ctrl+Shift+K* to preview the HTML file).
+
+The preview shows you a rendered HTML copy of the contents of the editor. Consequently, unlike *Knit*, *Preview* does not run any R code chunks. Instead, the output of the chunk when it was last run in the editor is displayed.

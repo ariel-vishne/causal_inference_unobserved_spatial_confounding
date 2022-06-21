@@ -1,0 +1,1705 @@
+---
+title: "DAPSm - Simulation for Causal Inference Course"
+author: "ariel vishne"
+date: "6 2 2022"
+output: html_document
+---
+
+```{r setup, include=TRUE, message = FALSE, warning=FALSE}
+rm(list=ls())
+
+#install.packages("geosphere)
+library(geosphere)
+library(devtools)
+library(spaMM)
+#devtools::install_github("gpapadog/DAPSm")
+library(DAPSm)
+library(mvtnorm)
+library(plot3D)
+library(dplyr)
+library(tidyverse)
+library(lemon)
+knit_print.data.frame <- lemon_print
+```
+
+## simulation function
+
+```{r simulate data functions, message = FALSE, warning = FALSE, echo = TRUE, results = 'hide'}
+
+
+simulate_data_multiple_iterations <- function(N.Simulations,
+                      toyDATA = toyData,
+                      zcoefs = c(0.1, 0.2, -0.1, -0.1, 0.3, -0.85),
+                      ycoefs = c(1, 0.55, 0.21, 0.17, -0.11, 3, 1),
+                      range = 0.5,
+                      smoothness = 0.5,
+                      stats.names = NA,
+                      seed = NA,
+                      interaction = FALSE){
+
+N <-  dim(toyData)[1] #number of observations, for toyData = 800
+long <- toyData$long # same coordinates for all simulations
+lat <- toyData$lat
+
+### data storage
+stats.df <- data.frame(matrix(ncol = length(stats.names), nrow = N.Simulations))
+colnames(stats.df) <- stats.names
+for (i in 1:N.Simulations){
+  ### generate data
+  
+  X1 <- rnorm(N, mean = 0, sd = 1)
+  X2 <- rnorm(N, mean = 0, sd = 1)
+  X3 <- rnorm(N, mean = 0, sd = 1)
+  X4 <- rnorm(N, mean = 0, sd = 1)
+  
+  # generate U
+  distMat <- geosphere::distm(toyData[c("long", "lat")], toyData[c("long", "lat")])
+  distMat <- (distMat - min(distMat)) / (max(distMat) - min(distMat))
+  maternMat <- MaternCorr(distMat, rho = range, smoothness = smoothness)
+  mu <- 0
+  sig_sq <- 1
+  U <- mvtnorm::rmvnorm(n=1, mean=rep(mu, N), sigma = sig_sq * maternMat, method = "chol")
+  # add interaction
+  if (interaction == TRUE){
+    U <- U + (rnorm(N, mean = 0.25, sd = 0.1) * X1) + (rnorm(N, mean = 0.2, sd = 0.08) * X2)
+  }
+  #if we want we can print one map for each pair of r,v
+  #if (i == 1){
+  #scatter2D(long, lat, colvar=U, main = paste("r =", range, "v =", smoothness))} 
+  
+  U <- as.vector(scale(t(U)))
+  
+  # generate Z
+  logit <- (zcoefs[1] * X1) + (zcoefs[2] * X2) + (zcoefs[3] * X3) + (zcoefs[4] * X4) + (zcoefs[5] * U) + zcoefs[6]
+  probs <- exp(logit) / (1+exp(logit))
+  Z <- rbinom(800, 1, probs)
+  
+  # generate Y
+  epsilon <- rnorm(N, mean = 0, sd = 1)
+  Y <- (ycoefs[1] * Z) +  (ycoefs[2] * X1) + (ycoefs[3] * X2) + (ycoefs[4] * X3) + (ycoefs[5] * X4) + (ycoefs[6] * U) + (ycoefs[7] * epsilon)
+  
+  # put all in single data frame and replicate for goldPS
+  data <- data.frame(Z, Y, U, long, lat, X1, X2, X3, X4)
+  gold.data <- data
+  
+  # compute propensity scores
+  
+  data$prop.scores <- glm(Z ~  X1 + X2 + X3 + X4, family = binomial,
+                              data = data)$fitted.values
+  
+  
+  
+  if (interaction == FALSE){
+  gold.data$prop.scores <-glm(Z ~  X1 + X2 + X3 + X4 + U, family = binomial,
+                              data = gold.data)$fitted.values
+  }
+  else if (interaction == TRUE){
+  gold.data$prop.scores <-glm(Z ~  X1 + X2 + X3 + X4 + U + (X1*U) +(X2*U), family = binomial,
+                              data = gold.data)$fitted.values
+  }
+  
+  # compute best w
+  bal <- CalcDAPSWeightBalance(data, weights = seq(0, 1, length.out = 40),
+                               cov.cols = 6:9, trt.col = 1,
+                               coords.columns = c(4, 5), caliper = 0.1,
+                               matching_algorithm = 'greedy')
+  # print one weight balance plot for each pair of r,v
+  #if (i==1){
+  #PlotWeightBalance(bal$balance, weights = seq(0, 1, length.out = 40), cutoff =   #0.15)}
+  DAPS <- DAPSchoiceModel(data, trt.col = 1, balance = bal$balance,
+                          cutoff = 0.15, pairs = bal$pairs,
+                          weights = seq(0, 1, length.out = 40))
+  
+  DAPS.est <- DAPSest(data, out.col = 2, trt.col = 1, caliper = 0.1,
+                  weight = DAPS$weight, coords.columns = c(4, 5),
+                  pairsRet = TRUE, cov.cols = 6:9, cutoff = 0.1,
+                  coord_dist = FALSE, caliper_type = 'DAPS',
+                  matching_algorithm = 'greedy')
+  # computing the gold ATT estimate, weight is set at 0 so it is essentially just using the known covariates, including U (notice the additional column in cov.cols)
+  gold.est <- DAPSest(gold.data, out.col = 2, trt.col = 1, caliper = 0.1,
+                  weight = 0, coords.columns = c(4, 5),
+                  pairsRet = TRUE, cov.cols = c(3, 6: 9), cutoff = 0.1,
+                  coord_dist = FALSE, caliper_type = 'PS',
+                  matching_algorithm = 'greedy')
+  
+  DAPS.ATT <- DAPS.est$est
+  goldPS.ATT <- gold.est$est
+  sq.error <- (DAPS.ATT - goldPS.ATT) ^ 2
+  DAPS.prct.matches <- dim(DAPS.est$pairs)[1] * 2 / N
+  gold.prct.matches <- dim(gold.est$pairs)[1] * 2 / N
+  trt <- sum(Z) / N * 100
+  ctrl <- 100 - trt
+  cov.U.X1 <- cov(U, X1)
+  cov.U.X2 <- cov(U, X2)
+  cov.U.X3 <- cov(U, X3)
+  w <- DAPS.est$weight
+  
+  stats.df[i,] <- c(DAPS.ATT, goldPS.ATT, sq.error, DAPS.prct.matches, gold.prct.matches, range, smoothness, trt, ctrl, cov.U.X1, cov.U.X2, cov.U.X3, seed, w)
+}
+return(stats.df)
+}
+
+
+
+```
+
+## General simulation parameters
+some will be changed later
+``` {r general simulation parameters}
+data("toyData")
+N.Simulations <- 100
+#in case we want to randomize other seeds
+#seeds <- runif(N.Simulations, 0, 20000000)
+
+# the simulated seeds are:
+seeds <- c(3992704,10824062,953398,4208890,19814407,7335433,3023777,11101801,3506568,6376926,9033456,7234137,10030832,7853886,2793248,6132247,5947447,15761513,9596394,11456623,16919409,5994096,3840943,74368,17986306,19842938,12089104,3455268,19294884,18617060,11506278,15229583,9566701,1962783,18131826,84824,7654329,6645419,7978741,12338030,14498460,216658,3081663,17672339,2252918,6273595,1806748,7412630,17992365,1305941,13166619,18643070,338823,16006383,14896179,9443819,4590464,14591817,16711566,1724717,19565424,3437484,10841979,7220517,9905139,7226046,12571178,5968529,15125831,3417795,3952140,1173172,6045941,6124195,16847256,3804787,12613582,8713714,8387097,9102044,1498318,5127967,17666946,11798905,9809161,13849711,1250737,8669322,12530560,1126001,133027,2542054,19329946,9399470,16334087,5416372,16279320,9933469,7672547,9321448)
+
+# if we want shorter runs
+#range.vec <- c(0.1, 1.0)
+#smoothness.vec <- c(0.1, 1.46)
+
+range.vec <- c(0.1, 0.4, 0.7, 1.0)
+smoothness.vec <- c(0.1, 0.37, 0.64, 0.91, 1.185, 1.46)
+stats.names <- c("DAPS.ATT", "goldPS.ATT", "sq.error", "DAPSm.prct.matched",
+                  "goldPS.prct.matched", "range", "smoothness", "pct.trt", "pct.ctrl",
+                  "cov.U.X1", "cov.U.X2", "cov.U.X3", "seed", "DAPS.opt.weight")
+
+# for comparing between simulations
+inter.simulation.names <- c("simulation_type", "pct.trt", "pct.matched", "cov U-X1", "cov U-X2", "cov U-X3")
+inter.simulation.df <- data.frame(matrix(ncol = length(inter.simulation.names), nrow = 0))
+colnames(inter.simulation.df) <- inter.simulation.names
+
+```
+
+## reproduction of paper simulation
+same coefficients as shown in Appendix C of supplementary data. No interaction between observed covariates X1, X2, X3, X4 and unobserved confounder U.
+```{r paper simulation reproduction, message = FALSE, warning = FALSE, echo = TRUE, results = 'hide'}
+
+# initial coefficients - same as in simulation
+alphaZ1 <- 0.1
+alphaZ2 <- 0.2
+alphaZ3 <- -0.1
+alphaZ4 <- -0.1
+alphaZU <- 0.3
+betaZ <- -0.85
+alphaYZ <- 1
+alphaY1 <- 0.55
+alphaY2 <- 0.21
+alphaY3 <- 1.17
+alphaY4 <- -0.11
+alphaYU <- 3
+epsilonY <- 1
+zcoefs <- c(alphaZ1, alphaZ2, alphaZ3, alphaZ4, alphaZU, betaZ)
+ycoefs <- c(alphaYZ, alphaY1, alphaY2, alphaY3, alphaY4, alphaYU, epsilonY)
+
+stats <- data.frame(matrix(ncol = length(stats.names), nrow = 0))
+colnames(stats) <- stats.names
+
+for (range in range.vec){
+  for (smoothness in smoothness.vec){
+    print(paste("starting simulations for r =", range, "v =", smoothness))
+    for (i in 1:length(seeds)){
+    set.seed(seeds[i])
+    print(paste("iteration number", i))
+    temp.df <- simulate_data_multiple_iterations(1,
+                                           toyDATA = toyData,
+                                           zcoefs = zcoefs,
+                                           ycoefs = ycoefs,
+                                           range = range,
+                                           smoothness = smoothness,
+                                           stats.names = stats.names,
+                                           seed = seeds[i],
+                                           interaction = FALSE)
+    stats <- rbind(stats, temp.df)
+  }
+}
+}
+MSE <- stats %>% group_by(range, smoothness) %>% summarise(MSE = mean(sq.error * 100)) %>% round(2) %>% mutate(smoothness = as.factor(smoothness)) %>% mutate(range = as.factor(range))
+
+weights <- stats %>% group_by(range, smoothness) %>% summarise(mean.weight = mean(DAPS.opt.weight)) %>% round(2) %>% mutate(smoothness = as.factor(smoothness)) %>% mutate(range = as.factor(range))
+```
+```{r regular simulation results}
+ggplot(MSE, aes(x = smoothness, y = range, fill = MSE)) +
+  geom_tile(color = "black") +
+  geom_text(aes(label = MSE), color = "black", size = 4) +
+  scale_fill_gradient(low = "white", high = "dark gray") +
+  labs(x = "smoothness", y = "range", title = "reproduction of paper simulation") +
+  coord_fixed()
+ggsave("MSE with regular simulation.png")
+
+ggplot(weights, aes(x = smoothness, y = range, fill = mean.weight)) +
+  geom_tile(color = "black") +
+  geom_text(aes(label = mean.weight), color = "black", size = 4) +
+  scale_fill_gradient(low = "light blue", high = "dark blue") +
+  labs(x = "smoothness", y = "range", title = "mean optimal weights for regular simulation") +
+  coord_fixed()
+ggsave("weights with regular simulation.png")
+
+simulation.stats <- data.frame(matrix(ncol = length(inter.simulation.names), nrow = 0))
+colnames(simulation.stats) <- inter.simulation.names
+simulation.stats[1,] <- c("paper reproduction", mean(stats$pct.trt),
+                               mean(stats$DAPSm.prct.matched),
+                               mean(stats$cov.U.X1),
+                               mean(stats$cov.U.X2),
+                               mean(stats$cov.U.X3))
+inter.simulation.df <- rbind(inter.simulation.df, simulation.stats)
+
+```
+
+## simulation with larger effect of U on outcome
+
+```{r simulation with larger effect of U on outcome, message = FALSE, warning = FALSE, echo = TRUE, results = 'hide'}
+
+# initial coefficients - same as in simulation
+alphaYU <- 8
+
+zcoefs <- c(alphaZ1, alphaZ2, alphaZ3, alphaZ4, alphaZU, betaZ)
+ycoefs <- c(alphaYZ, alphaY1, alphaY2, alphaY3, alphaY4, alphaYU, epsilonY)
+
+stats <- data.frame(matrix(ncol = length(stats.names), nrow = 0))
+colnames(stats) <- stats.names
+for (range in range.vec){
+  for (smoothness in smoothness.vec){
+    print(paste("starting simulations for r =", range, "v =", smoothness))
+    for (i in 1:length(seeds)){
+    set.seed(seeds[i])
+    print(paste("iteration number", i))
+    temp.df <- simulate_data_multiple_iterations(1,
+                                           toyDATA = toyData,
+                                           zcoefs = zcoefs,
+                                           ycoefs = ycoefs,
+                                           range = range,
+                                           smoothness = smoothness,
+                                           stats.names = stats.names,
+                                           seed = seeds[i],
+                                           interaction = FALSE)
+    stats <- rbind(stats, temp.df)
+  }
+}
+}
+MSE <- stats %>% group_by(range, smoothness) %>% summarise(MSE = mean(sq.error * 100)) %>% round(2) %>% mutate(smoothness = as.factor(smoothness)) %>% mutate(range = as.factor(range))
+
+weights <- stats %>% group_by(range, smoothness) %>% summarise(mean.weight = mean(DAPS.opt.weight)) %>% round(2) %>% mutate(smoothness = as.factor(smoothness)) %>% mutate(range = as.factor(range))
+```
+```{r higher effect results}
+ggplot(MSE, aes(x = smoothness, y = range, fill = MSE)) +
+  geom_tile(color = "black") +
+  geom_text(aes(label = MSE), color = "black", size = 4) +
+  scale_fill_gradient(low = "white", high = "dark gray") +
+  labs(x = "smoothness", y = "range", title = "MSE for simulation with higher effect of U on Y") +
+  coord_fixed()
+ggsave("MSE with large effect of U on Y.png")
+
+ggplot(weights, aes(x = smoothness, y = range, fill = mean.weight)) +
+  geom_tile(color = "black") +
+  geom_text(aes(label = mean.weight), color = "black", size = 4) +
+  scale_fill_gradient(low = "light blue", high = "dark blue") +
+  labs(x = "smoothness", y = "range", title = "mean optimal weights for simulation with higher effect of U on Y") +
+  coord_fixed()
+ggsave("weights with large effect of U on Y.png")
+
+simulation.stats <- data.frame(matrix(ncol = length(inter.simulation.names), nrow = 0))
+colnames(simulation.stats) <- inter.simulation.names
+simulation.stats[1,] <- c("higher effect U on Y", mean(stats$pct.trt),
+                               mean(stats$DAPSm.prct.matched),
+                               mean(stats$cov.U.X1),
+                               mean(stats$cov.U.X2),
+                               mean(stats$cov.U.X3))
+inter.simulation.df <- rbind(inter.simulation.df, simulation.stats)
+
+```
+
+## simulation with smaller effect of U on outcome
+
+```{r simulation with smaller effect of U on outcome, message = FALSE, warning = FALSE, echo = TRUE, results = 'hide'}
+
+# initial coefficients - same as in simulation
+alphaYU <- 0.5
+
+zcoefs <- c(alphaZ1, alphaZ2, alphaZ3, alphaZ4, alphaZU, betaZ)
+ycoefs <- c(alphaYZ, alphaY1, alphaY2, alphaY3, alphaY4, alphaYU, epsilonY)
+
+stats <- data.frame(matrix(ncol = length(stats.names), nrow = 0))
+colnames(stats) <- stats.names
+for (range in range.vec){
+  for (smoothness in smoothness.vec){
+    print(paste("starting simulations for r =", range, "v =", smoothness))
+    for (i in 1:length(seeds)){
+    set.seed(seeds[i])
+    print(paste("iteration number", i))
+    temp.df <- simulate_data_multiple_iterations(1,
+                                           toyDATA = toyData,
+                                           zcoefs = zcoefs,
+                                           ycoefs = ycoefs,
+                                           range = range,
+                                           smoothness = smoothness,
+                                           stats.names = stats.names,
+                                           seed = seeds[i],
+                                           interaction = FALSE)
+    stats <- rbind(stats, temp.df)
+  }
+}
+}
+MSE <- stats %>% group_by(range, smoothness) %>% summarise(MSE = mean(sq.error * 100)) %>% round(2) %>% mutate(smoothness = as.factor(smoothness)) %>% mutate(range = as.factor(range))
+
+weights <- stats %>% group_by(range, smoothness) %>% summarise(mean.weight = mean(DAPS.opt.weight)) %>% round(2) %>% mutate(smoothness = as.factor(smoothness)) %>% mutate(range = as.factor(range))
+```
+```{r lower effect results}
+ggplot(MSE, aes(x = smoothness, y = range, fill = MSE)) +
+  geom_tile(color = "black") +
+  geom_text(aes(label = MSE), color = "black", size = 4) +
+  scale_fill_gradient(low = "white", high = "dark gray") +
+  labs(x = "smoothness", y = "range", title = "MSE for simulation with lower effect of U on Y") +
+  coord_fixed()
+ggsave("MSE with small effect of U on Y.png")
+
+ggplot(weights, aes(x = smoothness, y = range, fill = mean.weight)) +
+  geom_tile(color = "black") +
+  geom_text(aes(label = mean.weight), color = "black", size = 4) +
+  scale_fill_gradient(low = "light blue", high = "dark blue") +
+  labs(x = "smoothness", y = "range", title = "mean optimal weights for simulation with lower effect of U on Y") +
+  coord_fixed()
+ggsave("weights with small effect of U on Y.png")
+
+
+simulation.stats <- data.frame(matrix(ncol = length(inter.simulation.names), nrow = 0))
+colnames(simulation.stats) <- inter.simulation.names
+simulation.stats[1,] <- c("lower effect U on Y", mean(stats$pct.trt),
+                               mean(stats$DAPSm.prct.matched),
+                               mean(stats$cov.U.X1),
+                               mean(stats$cov.U.X2),
+                               mean(stats$cov.U.X3))
+inter.simulation.df <- rbind(inter.simulation.df, simulation.stats)
+
+```
+
+
+## simulation with no effect of U on outcome
+
+```{r simulation with no effect of U on outcome, message = FALSE, warning = FALSE, echo = TRUE, results = 'hide'}
+
+# initial coefficients - same as in simulation
+alphaYU <- 0
+
+zcoefs <- c(alphaZ1, alphaZ2, alphaZ3, alphaZ4, alphaZU, betaZ)
+ycoefs <- c(alphaYZ, alphaY1, alphaY2, alphaY3, alphaY4, alphaYU, epsilonY)
+
+stats <- data.frame(matrix(ncol = length(stats.names), nrow = 0))
+colnames(stats) <- stats.names
+for (range in range.vec){
+  for (smoothness in smoothness.vec){
+    print(paste("starting simulations for r =", range, "v =", smoothness))
+    for (i in 1:length(seeds)){
+    set.seed(seeds[i])
+    print(paste("iteration number", i))
+    temp.df <- simulate_data_multiple_iterations(1,
+                                           toyDATA = toyData,
+                                           zcoefs = zcoefs,
+                                           ycoefs = ycoefs,
+                                           range = range,
+                                           smoothness = smoothness,
+                                           stats.names = stats.names,
+                                           seed = seeds[i],
+                                           interaction = FALSE)
+    stats <- rbind(stats, temp.df)
+  }
+}
+}
+MSE <- stats %>% group_by(range, smoothness) %>% summarise(MSE = mean(sq.error * 100)) %>% round(2) %>% mutate(smoothness = as.factor(smoothness)) %>% mutate(range = as.factor(range))
+
+weights <- stats %>% group_by(range, smoothness) %>% summarise(mean.weight = mean(DAPS.opt.weight)) %>% round(2) %>% mutate(smoothness = as.factor(smoothness)) %>% mutate(range = as.factor(range))
+```
+```{r no effect results}
+ggplot(MSE, aes(x = smoothness, y = range, fill = MSE)) +
+  geom_tile(color = "black") +
+  geom_text(aes(label = MSE), color = "black", size = 4) +
+  scale_fill_gradient(low = "white", high = "dark gray") +
+  labs(x = "smoothness", y = "range", title = "MSE for simulation with no effect of U on Y") +
+  coord_fixed()
+ggsave("MSE with no effect of U on Y.png")
+
+ggplot(weights, aes(x = smoothness, y = range, fill = mean.weight)) +
+  geom_tile(color = "black") +
+  geom_text(aes(label = mean.weight), color = "black", size = 4) +
+  scale_fill_gradient(low = "light blue", high = "dark blue") +
+  labs(x = "smoothness", y = "range", title = "mean optimal weights for simulation with no effect of U on Y") +
+  coord_fixed()
+ggsave("weights with no effect of U on Y.png")
+
+
+simulation.stats <- data.frame(matrix(ncol = length(inter.simulation.names), nrow = 0))
+colnames(simulation.stats) <- inter.simulation.names
+simulation.stats[1,] <- c("lower effect U on Y", mean(stats$pct.trt),
+                               mean(stats$DAPSm.prct.matched),
+                               mean(stats$cov.U.X1),
+                               mean(stats$cov.U.X2),
+                               mean(stats$cov.U.X3))
+inter.simulation.df <- rbind(inter.simulation.df, simulation.stats)
+
+```
+
+
+## simulation with interaction
+same coefficients as shown in the paper but trying to create correlation
+```{r simulation with interaction, message = FALSE, warning = FALSE, echo = TRUE, results = 'hide'}
+
+# initial coefficients - same as in simulation
+alphaZ1 <- 0.1
+alphaZ2 <- 0.2
+alphaZ3 <- -0.1
+alphaZ4 <- -0.1
+alphaZU <- 0.3
+betaZ <- -0.85
+alphaYZ <- 1
+alphaY1 <- 0.55
+alphaY2 <- 0.21
+alphaY3 <- 1.17
+alphaY4 <- -0.11
+alphaYU <- 3
+epsilonY <- 1
+zcoefs <- c(alphaZ1, alphaZ2, alphaZ3, alphaZ4, alphaZU, betaZ)
+ycoefs <- c(alphaYZ, alphaY1, alphaY2, alphaY3, alphaY4, alphaYU, epsilonY)
+
+stats <- data.frame(matrix(ncol = length(stats.names), nrow = 0))
+colnames(stats) <- stats.names
+
+for (range in range.vec){
+  for (smoothness in smoothness.vec){
+    print(paste("starting simulations for r =", range, "v =", smoothness))
+    for (i in 1:length(seeds)){
+    set.seed(seeds[i])
+    print(paste("iteration number", i))
+    temp.df <- simulate_data_multiple_iterations(1,
+                                           toyDATA = toyData,
+                                           zcoefs = zcoefs,
+                                           ycoefs = ycoefs,
+                                           range = range,
+                                           smoothness = smoothness,
+                                           stats.names = stats.names,
+                                           seed = seeds[i],
+                                           interaction = TRUE)
+    stats <- rbind(stats, temp.df)
+  }
+}
+}
+MSE <- stats %>% group_by(range, smoothness) %>% summarise(MSE = mean(sq.error * 100)) %>% round(2) %>% mutate(smoothness = as.factor(smoothness)) %>% mutate(range = as.factor(range))
+
+weights <- stats %>% group_by(range, smoothness) %>% summarise(mean.weight = mean(DAPS.opt.weight)) %>% round(2) %>% mutate(smoothness = as.factor(smoothness)) %>% mutate(range = as.factor(range))
+```
+```{r interaction results}
+ggplot(MSE, aes(x = smoothness, y = range, fill = MSE)) +
+  geom_tile(color = "black") +
+  geom_text(aes(label = MSE), color = "black", size = 4) +
+  scale_fill_gradient(low = "white", high = "dark gray") +
+  labs(x = "smoothness", y = "range", title = "MSE simulation with interaction") +
+  coord_fixed()
+ggsave("MSE with interaction.png")
+
+ggplot(weights, aes(x = smoothness, y = range, fill = mean.weight)) +
+  geom_tile(color = "black") +
+  geom_text(aes(label = mean.weight), color = "black", size = 4) +
+  scale_fill_gradient(low = "light blue", high = "dark blue") +
+  labs(x = "smoothness", y = "range", title = "mean optimal weights for simulation with interaction") +
+  coord_fixed()
+ggsave("weights with interactions.png")
+
+simulation.stats <- data.frame(matrix(ncol = length(inter.simulation.names), nrow = 0))
+colnames(simulation.stats) <- inter.simulation.names
+simulation.stats[1,] <- c("interaction", mean(stats$pct.trt),
+                               mean(stats$DAPSm.prct.matched),
+                               mean(stats$cov.U.X1),
+                               mean(stats$cov.U.X2),
+                               mean(stats$cov.U.X3))
+inter.simulation.df <- rbind(inter.simulation.df, simulation.stats)
+
+```
+
+## summary statistics
+```{r summary statistic, render = lemon_print}
+print(inter.simulation.df)
+```
+
+
+## multiple U
+```{r multiple U}
+
+data(toyData2)
+
+df1 <- toyData2
+df2 <- toyData2
+df3 <- toyData2
+df4 <- toyData2
+df1$long2 <- df1$long + rnorm(length(toyData2$long), mean = 0.1 * sd(toyData2$long), sd = 0.1 * sd(toyData2$long))
+df1$lat2 <- df1$lat + rnorm(length(toyData2$lat), mean = 0.1 * sd(toyData2$lat), sd = 0.1  * sd(toyData2$lat))
+df2$long2 <- df2$long + rnorm(length(toyData2$long), mean = 0.1 * sd(toyData2$long), sd = 0.1 * sd(toyData2$long))
+df2$lat2 <- df2$lat + rnorm(length(toyData2$lat), mean = 0.1 * sd(toyData2$lat), sd = 0.1  * sd(toyData2$lat))
+df3$long2 <- df3$long + rnorm(length(toyData2$long), mean = 0.1 * sd(toyData2$long), sd = 0.1 * sd(toyData2$long))
+df3$lat2 <- df3$lat + rnorm(length(toyData2$lat), mean = 0.1 * sd(toyData2$lat), sd = 0.1  * sd(toyData2$lat))
+df4$long2 <- df4$long + rnorm(length(toyData2$long), mean = 0.1 * sd(toyData2$long), sd = 0.1 * sd(toyData2$long))
+df4$lat2 <- df4$lat + rnorm(length(toyData2$lat), mean = 0.1 * sd(toyData2$lat), sd = 0.1  * sd(toyData2$lat))
+df <- rbind(df1, df2, df3, df4)
+
+ggplot(df) +
+  geom_point(aes(x = long2, y = lat2, color = as.factor(long))) +
+  geom_point(aes(x = long, y =lat), color = "black") +
+  theme(legend.position = "none") +
+  labs( title = "800 observations sampled from 200 original (black). Original serve as centroids")
+
+
+# coefficients
+# initial coefficients - same as in simulation
+alphaZ1 <- 0.1
+alphaZ2 <- 0.2
+alphaZ3 <- -0.1
+alphaZ4 <- -0.1
+alphaZU1 <- 0.3
+alphaZU2 <- 0.2
+betaZ <- -0.85
+alphaYZ <- 1
+alphaY1 <- 0.55
+alphaY2 <- 0.21
+alphaY3 <- 1.17
+alphaY4 <- -0.11
+alphaYU1 <- 1.5
+alphaYU2 <- 1.1
+epsilonY <- 1
+zcoefs <- c(alphaZ1, alphaZ2, alphaZ3, alphaZ4, alphaZU1, alphaZU2, betaZ)
+ycoefs <- c(alphaYZ, alphaY1, alphaY2, alphaY3, alphaY4, alphaYU1, alphaYU2, epsilonY)
+
+# parameters
+r1 <- 0.1
+v1 <- 0.1
+r2 <- 1
+v2 <- 1.46
+w1 <- 0.5
+w2 <- 0.5
+
+N <-  dim(df)[1] #number of observations, for toyData = 800
+long <- df$long # same coordinates for all simulations
+lat <- df$lat
+
+
+### data storage
+stats.df <- data.frame(matrix(ncol = length(stats.names), nrow = N.Simulations))
+colnames(stats.df) <- stats.names
+
+#Generate Data
+X1 <- rnorm(N, mean = 0, sd = 1)
+X2 <- rnorm(N, mean = 0, sd = 1)
+X3 <- rnorm(N, mean = 0, sd = 1)
+X4 <- rnorm(N, mean = 0, sd = 1)
+  
+# generate U1 and U2
+distMat1 <- geosphere::distm(df[c("long2", "lat2")], df[c("long2", "lat2")]) # observation distance
+distMat2 <- geosphere::distm(df[c("long", "lat")], df[c("long", "lat")]) # centroid distance
+distMat1 <- (distMat1 - min(distMat1)) / (max(distMat1) - min(distMat1))
+distMat2 <- (distMat2 - min(distMat2)) / (max(distMat2) - min(distMat2))
+maternMat1 <- MaternCorr(distMat1, rho = r1, smoothness = v1)
+maternMat2 <- MaternCorr(distMat2, rho = r2, smoothness = v2)
+mu <- 0
+sig_sq <- 1
+U1 <- rmvnorm(n=1, mean=rep(mu, N), sigma = sig_sq * maternMat1)
+U2 <- rmvnorm(n=1, mean=rep(mu, N), sigma = sig_sq * maternMat2)
+scatter2D(df$long, df$lat, colvar=U1, main = paste("r =", r1, "v =", v1), pch = 19) 
+scatter2D(df$long2, df$lat2, colvar=U2, main = paste("r =", r2, "v =", v2), pch = 18) 
+U1 <- as.vector(scale(t(U1)))
+U2 <- as.vector(scale(t(U2)))
+  
+# generate Z
+logit <- (zcoefs[1] * X1) + (zcoefs[2] * X2) + (zcoefs[3] * X3) + (zcoefs[4] * X4) + (zcoefs[5] * U1) + (zcoefs[6] * U2) + zcoefs[7]
+probs <- exp(logit) / (1+exp(logit))
+Z <- rbinom(800, 1, probs)
+  
+  # generate Y
+epsilon <- rnorm(N, mean = 0, sd = 1)
+Y <- (ycoefs[1] * Z) +  (ycoefs[2] * X1) + (ycoefs[3] * X2) + (ycoefs[4] * X3) + (ycoefs[5] * X4) + (ycoefs[6] * U1) + (ycoefs[7] * U2) + (ycoefs[8] * epsilon)
+  
+# put all in single data frame and replicate for goldPS
+data <- data.frame(Z, Y, U1, U2, df$long2, df$lat2, X1, X2, X3, X4, df$long, df$lat)
+gold.data <- data
+  
+# compute propensity scores
+  
+data$prop.scores <- glm(Z ~  X1 + X2 + X3 + X4, family = binomial,
+                              data = data)$fitted.values
+gold.data$prop.scores <-glm(Z ~  X1 + X2 + X3 + X4 + U1 + U2, family = binomial,
+                              data = gold.data)$fitted.values
+
+  
+# observation balancing
+bal <- CalcDAPSWeightBalance(data, weights = seq(0, 1, length.out = 40),
+                             cov.cols = 7:10, trt.col = 1,
+                             coords.columns = c(5, 6), caliper = 0.1,
+                             matching_algorithm = 'greedy')
+PlotWeightBalance(bal$balance, weights = seq(0, 1, length.out = 40), cutoff = 0.15)
+DAPS <- DAPSchoiceModel(data, trt.col = 1, balance = bal$balance,
+                        cutoff = 0.15, pairs = bal$pairs,
+                        weights = seq(0, 1, length.out = 40))
+
+DAPS.est <- DAPSest(data, out.col = 2, trt.col = 1, caliper = 0.1,
+                weight = DAPS$weight, coords.columns = c(5, 6),
+                pairsRet = TRUE, cov.cols = 7:10, cutoff = 0.1,
+                coord_dist = TRUE, caliper_type = 'DAPS',
+                matching_algorithm = 'greedy')
+# matching only with observation coordinates
+MatchedDataMap(x = bal$full_pairs[[10]], trt_coords = c(3, 4),
+             con_coords = c(7, 8))
+
+
+# cluster balancing (notice differenct coord.columns)
+bal.cluster <- CalcDAPSWeightBalance(data, weights = seq(0, 1, length.out = 40),
+                             cov.cols = 7:10, trt.col = 1,
+                             coords.columns = c(11, 12), caliper = 0.1,
+                             matching_algorithm = 'greedy')
+DAPS.cluster <- DAPSchoiceModel(data, trt.col = 1, balance = bal.cluster$balance,
+                        cutoff = 0.15, pairs = bal.cluster$pairs,
+                        weights = seq(0, 1, length.out = 40))
+DAPS.est.cluster <- DAPSest(data, out.col = 2, trt.col = 1, caliper = 0.1,
+                weight = DAPS.cluster$weight, coords.columns = c(11, 12),
+                pairsRet = TRUE, cov.cols = 7:10, cutoff = 0.1,
+                coord_dist = TRUE, caliper_type = 'DAPS',
+                matching_algorithm = 'greedy')
+# matching only with cluster coordinates
+MatchedDataMap(x = bal.cluster$full_pairs[[10]], trt_coords = c(3, 4),
+             con_coords = c(7, 8))
+
+
+# combined using our own weighted distance function
+mult.unobserved <- function(distMat){
+  m <- distMat2[data$Z == 1, data$Z == 0]
+  x <- ((distMat * w1) + (m * w2))
+  standx <- (x - min(x)) / (max(x) - min(x))
+  return(standx)
+}
+bal.combined <- CalcDAPSWeightBalance(data, weights = seq(0, 1, length.out = 40),
+                             cov.cols = 7:10, trt.col = 1,
+                             coords.columns = c(5, 6), caliper = 0.1,
+                             distance = mult.unobserved,
+                             matching_algorithm = 'greedy')
+DAPS.combined <- DAPSchoiceModel(data, trt.col = 1, balance = bal.combined$balance,
+                        cutoff = 0.15, pairs = bal.combined$pairs,
+                        weights = seq(0, 1, length.out = 40))
+DAPS.est.combined <- DAPSest(data, out.col = 2, trt.col = 1, caliper = 0.1,
+                weight = DAPS.combined$weight, coords.columns = c(5, 6),
+                pairsRet = TRUE, cov.cols = 7:10, cutoff = 0.1,
+                coord_dist = TRUE, caliper_type = 'PS',
+                matching_algorithm = 'greedy')
+MatchedDataMap(x = DAPS.est.combined$pairs, trt_coords = c(3, 4),
+             con_coords = c(7, 8))
+
+# computing the gold ATT estimate, weight is set at 0 so it[1] 10
+[1] 15
+[1] 20
+[1] 25
+[1] 30
+[1] 35
+[1] 40
+[1] "iteration number 56"
+[1] 5
+[1] 10
+[1] 15
+[1] 20
+[1] 25
+[1] 30
+[1] 35
+[1] 40
+[1] "iteration number 57"
+[1] 5
+[1] 10
+[1] 15
+[1] 20
+[1] 25
+[1] 30
+[1] 35
+[1] 40
+[1] "iteration number 58"
+[1] 5
+[1] 10
+[1] 15
+[1] 20
+[1] 25
+[1] 30
+[1] 35
+[1] 40
+[1] "iteration number 59"
+[1] 5
+[1] 10
+[1] 15
+[1] 20
+[1] 25
+[1] 30
+[1] 35
+[1] 40
+[1] "iteration number 60"
+[1] 5
+[1] 10
+[1] 15
+[1] 20
+[1] 25
+[1] 30
+[1] 35
+[1] 40
+[1] "iteration number 61"
+[1] 5
+[1] 10
+[1] 15
+[1] 20
+[1] 25
+[1] 30
+[1] 35
+[1] 40
+[1] "iteration number 62"
+[1] 5
+[1] 10
+[1] 15
+[1] 20
+[1] 25
+[1] 30
+[1] 35
+[1] 40
+[1] "iteration number 63"
+[1] 5
+[1] 10
+[1] 15
+[1] 20
+[1] 25
+[1] 30
+[1] 35
+[1] 40
+[1] "iteration number 64"
+[1] 5
+[1] 10
+[1] 15
+[1] 20
+[1] 25
+[1] 30
+[1] 35
+[1] 40
+[1] "iteration number 65"
+[1] 5
+[1] 10
+[1] 15
+[1] 20
+[1] 25
+[1] 30
+[1] 35
+[1] 40
+[1] "iteration number 66"
+[1] 5
+[1] 10
+[1] 15
+[1] 20
+[1] 25
+[1] 30
+[1] 35
+[1] 40
+[1] "iteration number 67"
+[1] 5
+[1] 10
+[1] 15
+[1] 20
+[1] 25
+[1] 30
+[1] 35
+[1] 40
+[1] "iteration number 68"
+[1] 5
+[1] 10
+[1] 15
+[1] 20
+[1] 25
+[1] 30
+[1] 35
+[1] 40
+[1] "iteration number 69"
+[1] 5
+[1] 10
+[1] 15
+[1] 20
+[1] 25
+[1] 30
+[1] 35
+[1] 40
+[1] "iteration number 70"
+[1] 5
+[1] 10
+[1] 15
+[1] 20
+[1] 25
+[1] 30
+[1] 35
+[1] 40
+[1] "iteration number 71"
+[1] 5
+[1] 10
+[1] 15
+[1] 20
+[1] 25
+[1] 30
+[1] 35
+[1] 40
+[1] "iteration number 72"
+[1] 5
+[1] 10
+[1] 15
+[1] 20
+[1] 25
+[1] 30
+[1] 35
+[1] 40
+[1] "iteration number 73"
+[1] 5
+[1] 10
+[1] 15
+[1] 20
+[1] 25
+[1] 30
+[1] 35
+[1] 40
+[1] "iteration number 74"
+[1] 5
+[1] 10
+[1] 15
+[1] 20
+[1] 25
+[1] 30
+[1] 35
+[1] 40
+[1] "iteration number 75"
+[1] 5
+[1] 10
+[1] 15
+[1] 20
+[1] 25
+[1] 30
+[1] 35
+[1] 40
+[1] "iteration number 76"
+[1] 5
+[1] 10
+[1] 15
+[1] 20
+[1] 25
+[1] 30
+[1] 35
+[1] 40
+[1] "iteration number 77"
+[1] 5
+[1] 10
+[1] 15
+[1] 20
+[1] 25
+[1] 30
+[1] 35
+[1] 40
+[1] "iteration number 78"
+[1] 5
+[1] 10
+[1] 15
+[1] 20
+[1] 25
+[1] 30
+[1] 35
+[1] 40
+[1] "iteration number 79"
+[1] 5
+[1] 10
+[1] 15
+[1] 20
+[1] 25
+[1] 30
+[1] 35
+[1] 40
+[1] "iteration number 80"
+[1] 5
+[1] 10
+[1] 15
+[1] 20
+[1] 25
+[1] 30
+[1] 35
+[1] 40
+[1] "iteration number 81"
+[1] 5
+[1] 10
+[1] 15
+[1] 20
+[1] 25
+[1] 30
+[1] 35
+[1] 40
+[1] "iteration number 82"
+[1] 5
+[1] 10
+[1] 15
+[1] 20
+[1] 25
+[1] 30
+[1] 35
+[1] 40
+[1] "iteration number 83"
+[1] 5
+[1] 10
+[1] 15
+[1] 20
+[1] 25
+[1] 30
+[1] 35
+[1] 40
+[1] "iteration number 84"
+[1] 5
+[1] 10
+[1] 15
+[1] 20
+[1] 25
+[1] 30
+[1] 35
+[1] 40
+[1] "iteration number 85"
+[1] 5
+[1] 10
+[1] 15
+[1] 20
+[1] 25
+[1] 30
+[1] 35
+[1] 40
+[1] "iteration number 86"
+[1] 5
+[1] 10
+[1] 15
+[1] 20
+[1] 25
+[1] 30
+[1] 35
+[1] 40
+[1] "iteration number 87"
+[1] 5
+[1] 10
+[1] 15
+[1] 20
+[1] 25
+[1] 30
+[1] 35
+[1] 40
+[1] "iteration number 88"
+[1] 5
+[1] 10
+[1] 15
+[1] 20
+[1] 25
+[1] 30
+[1] 35
+[1] 40
+[1] "iteration number 89"
+[1] 5
+[1] 10
+[1] 15
+[1] 20
+[1] 25
+[1] 30
+[1] 35
+[1] 40
+[1] "iteration number 90"
+[1] 5
+[1] 10
+[1] 15
+[1] 20
+[1] 25
+[1] 30
+[1] 35
+[1] 40
+[1] "iteration number 91"
+[1] 5
+[1] 10
+[1] 15
+[1] 20
+[1] 25
+[1] 30
+[1] 35
+[1] 40
+[1] "iteration number 92"
+[1] 5
+[1] 10
+[1] 15
+[1] 20
+[1] 25
+[1] 30
+[1] 35
+[1] 40
+[1] "iteration number 93"
+[1] 5
+[1] 10
+[1] 15
+[1] 20
+[1] 25
+[1] 30
+[1] 35
+[1] 40
+[1] "iteration number 94"
+[1] 5
+[1] 10
+[1] 15
+[1] 20
+[1] 25
+[1] 30
+[1] 35
+[1] 40
+[1] "iteration number 95"
+[1] 5
+[1] 10
+[1] 15
+[1] 20
+[1] 25
+[1] 30
+[1] 35
+[1] 40
+[1] "iteration number 96"
+[1] 5
+[1] 10
+[1] 15
+[1] 20
+[1] 25
+[1] 30
+[1] 35
+[1] 40
+[1] "iteration number 97"
+[1] 5
+[1] 10
+[1] 15
+[1] 20
+[1] 25
+[1] 30
+[1] 35
+[1] 40
+[1] "iteration number 98"
+[1] 5
+[1] 10
+[1] 15
+[1] 20
+[1] 25
+[1] 30
+[1] 35
+[1] 40
+[1] "iteration number 99"
+[1] 5
+[1] 10
+[1] 15
+[1] 20
+[1] 25
+[1] 30
+[1] 35
+[1] 40
+[1] "iteration number 100"
+[1] 5
+[1] 10
+[1] 15
+[1] 20
+[1] 25
+[1] 30
+[1] 35
+[1] 40
+[1] "starting simulations for r = 1 v = 1.185"
+[1] "iteration number 1"
+[1] 5
+[1] 10
+[1] 15
+[1] 20
+[1] 25
+[1] 30
+[1] 35
+[1] 40
+[1] "iteration number 2"
+[1] 5
+[1] 10
+[1] 15
+[1] 20
+[1] 25
+[1] 30
+[1] 35
+[1] 40
+[1] "iteration number 3"
+[1] 5
+[1] 10
+[1] 15
+[1] 20
+[1] 25
+[1] 30
+[1] 35
+[1] 40
+[1] "iteration number 4"
+[1] 5
+[1] 10
+[1] 15
+[1] 20
+[1] 25
+[1] 30
+[1] 35
+[1] 40
+[1] "iteration number 5"
+[1] 5
+[1] 10
+[1] 15
+[1] 20
+[1] 25
+[1] 30
+[1] 35
+[1] 40
+[1] "iteration number 6"
+[1] 5
+[1] 10
+[1] 15
+[1] 20
+[1] 25
+[1] 30
+[1] 35
+[1] 40
+[1] "iteration number 7"
+[1] 5
+[1] 10
+[1] 15
+[1] 20
+[1] 25
+[1] 30
+[1] 35
+[1] 40
+[1] "iteration number 8"
+[1] 5
+[1] 10
+[1] 15
+[1] 20
+[1] 25
+[1] 30
+[1] 35
+[1] 40
+[1] "iteration number 9"
+[1] 5
+[1] 10
+[1] 15
+[1] 20
+[1] 25
+[1] 30
+[1] 35
+[1] 40
+[1] "iteration number 10"
+[1] 5
+[1] 10
+[1] 15
+[1] 20
+[1] 25
+[1] 30
+[1] 35
+[1] 40
+[1] "iteration number 11"
+[1] 5
+[1] 10
+[1] 15
+[1] 20
+[1] 25
+[1] 30
+[1] 35
+[1] 40
+[1] "iteration number 12"
+[1] 5
+[1] 10
+[1] 15
+[1] 20
+[1] 25
+[1] 30
+[1] 35
+[1] 40
+[1] "iteration number 13"
+[1] 5
+[1] 10
+[1] 15
+[1] 20
+[1] 25
+[1] 30
+[1] 35
+[1] 40
+[1] "iteration number 14"
+[1] 5
+[1] 10
+[1] 15
+[1] 20
+[1] 25
+[1] 30
+[1] 35
+[1] 40
+[1] "iteration number 15"
+[1] 5
+[1] 10
+[1] 15
+[1] 20
+[1] 25
+[1] 30
+[1] 35
+[1] 40
+[1] "iteration number 16"
+[1] 5
+[1] 10
+[1] 15
+[1] 20
+[1] 25
+[1] 30
+[1] 35
+[1] 40
+[1] "iteration number 17"
+[1] 5
+[1] 10
+[1] 15
+[1] 20
+[1] 25
+[1] 30
+[1] 35
+[1] 40
+[1] "iteration number 18"
+[1] 5
+[1] 10
+[1] 15
+[1] 20
+[1] 25
+[1] 30
+[1] 35
+[1] 40
+[1] "iteration number 19"
+[1] 5
+[1] 10
+[1] 15
+[1] 20
+[1] 25
+[1] 30
+[1] 35
+[1] 40
+[1] "iteration number 20"
+[1] 5
+[1] 10
+[1] 15
+[1] 20
+[1] 25
+[1] 30
+[1] 35
+[1] 40
+[1] "iteration number 21"
+[1] 5
+[1] 10
+[1] 15
+[1] 20
+[1] 25
+[1] 30
+[1] 35
+[1] 40
+[1] "iteration number 22"
+[1] 5
+[1] 10
+[1] 15
+[1] 20
+[1] 25
+[1] 30
+[1] 35
+[1] 40
+[1] "iteration number 23"
+[1] 5
+[1] 10
+[1] 15
+[1] 20
+[1] 25
+[1] 30
+[1] 35
+[1] 40
+[1] "iteration number 24"
+[1] 5
+[1] 10
+[1] 15
+[1] 20
+[1] 25
+[1] 30
+[1] 35
+[1] 40
+[1] "iteration number 25"
+[1] 5
+[1] 10
+[1] 15
+[1] 20
+[1] 25
+[1] 30
+[1] 35
+[1] 40
+[1] "iteration number 26"
+[1] 5
+[1] 10
+[1] 15
+[1] 20
+[1] 25
+[1] 30
+[1] 35
+[1] 40
+[1] "iteration number 27"
+[1] 5
+[1] 10
+[1] 15
+[1] 20
+[1] 25
+[1] 30
+[1] 35
+[1] 40
+[1] "iteration number 28"
+[1] 5
+[1] 10
+[1] 15
+[1] 20
+[1] 25
+[1] 30
+[1] 35
+[1] 40
+[1] "iteration number 29"
+[1] 5
+[1] 10
+[1] 15
+[1] 20
+[1] 25
+[1] 30
+[1] 35
+[1] 40
+[1] "iteration number 30"
+[1] 5
+[1] 10
+[1] 15
+[1] 20
+[1] 25
+[1] 30
+[1] 35
+[1] 40
+[1] "iteration number 31"
+[1] 5
+[1] 10
+[1] 15
+[1] 20
+[1] 25
+[1] 30
+[1] 35
+[1] 40
+[1] "iteration number 32"
+[1] 5
+[1] 10
+[1] 15
+[1] 20
+[1] 25
+[1] 30
+[1] 35
+[1] 40
+[1] "iteration number 33"
+[1] 5
+[1] 10
+[1] 15
+[1] 20
+[1] 25
+[1] 30
+[1] 35
+[1] 40
+[1] "iteration number 34"
+[1] 5
+[1] 10
+[1] 15
+[1] 20
+[1] 25
+[1] 30
+[1] 35
+[1] 40
+[1] "iteration number 35"
+[1] 5
+[1] 10
+[1] 15
+[1] 20
+[1] 25
+[1] 30
+[1] 35
+[1] 40
+[1] "iteration number 36"
+[1] 5
+[1] 10
+[1] 15
+[1] 20
+[1] 25
+[1] 30
+[1] 35
+[1] 40
+[1] "iteration number 37"
+[1] 5
+[1] 10
+[1] 15
+[1] 20
+[1] 25
+[1] 30
+[1] 35
+[1] 40
+[1] "iteration number 38"
+[1] 5
+[1] 10
+[1] 15
+[1] 20
+[1] 25
+[1] 30
+[1] 35
+[1] 40
+[1] "iteration number 39"
+[1] 5
+[1] 10
+[1] 15
+[1] 20
+[1] 25
+[1] 30
+[1] 35
+[1] 40
+[1] "iteration number 40"
+[1] 5
+[1] 10
+[1] 15
+[1] 20
+[1] 25
+[1] 30
+[1] 35
+[1] 40
+[1] "iteration number 41"
+[1] 5
+[1] 10
+[1] 15
+[1] 20
+[1] 25
+[1] 30
+[1] 35
+[1] 40
+[1] "iteration number 42"
+[1] 5
+[1] 10
+[1] 15
+[1] 20
+[1] 25
+[1] 30
+[1] 35
+[1] 40
+[1] "iteration number 43"
+[1] 5
+[1] 10
+[1] 15
+[1] 20
+[1] 25
+[1] 30
+[1] 35
+[1] 40
+[1] "iteration number 44"
+[1] 5
+[1] 10
+[1] 15
+[1] 20
+[1] 25
+[1] 30
+[1] 35
+[1] 40
+[1] "iteration number 45"
+[1] 5
+[1] 10
+[1] 15
+[1] 20
+[1] 25
+[1] 30
+[1] 35
+[1] 40
+[1] "iteration number 46"
+[1] 5
+[1] 10
+[1] 15
+[1] 20
+[1] 25
+[1] 30
+[1] 35
+[1] 40
+[1] "iteration number 47"
+[1] 5
+[1] 10
+[1] 15
+[1] 20
+[1] 25
+[1] 30
+[1] 35
+[1] 40
+[1] "iteration number 48"
+[1] 5
+[1] 10
+[1] 15
+[1] 20
+[1] 25
+[1] 30
+[1] 35
+[1] 40
+[1] "iteration number 49"
+[1] 5
+[1] 10
+[1] 15
+[1] 20
+[1] 25
+[1] 30
+[1] 35
+[1] 40
+[1] "iteration number 50"
+[1] 5
+[1] 10
+[1] 15
+[1] 20
+[1] 25
+[1] 30
+[1] 35
+[1] 40
+[1] "iteration number 51"
+[1] 5
+[1] 10
+[1] 15
+[1] 20
+[1] 25
+[1] 30
+[1] 35
+[1] 40
+[1] "iteration number 52"
+[1] 5
+[1] 10
+[1] 15
+[1] 20
+[1] 25
+[1] 30
+[1] 35
+[1] 40
+[1] "iteration number 53"
+[1] 5
+[1] 10
+[1] 15
+[1] 20
+[1] 25
+[1] 30
+[1] 35
+[1] 40
+[1] "iteration number 54"
+[1] 5
+[1] 10
+[1] 15
+[1] 20
+[1] 25
+[1] 30
+[1] 35
+[1] 40
+[1] "iteration number 55"
+[1] 5
+[1] 10
+[1] 15
+[1] 20
+[1] 25
+[1] 30
+[1] 35
+[1] 40
+[1] "iteration number 56"
+[1] 5
+[1] 10
+[1] 15
+[1] 20
+[1] 25
+[1] 30
+[1] 35
+[1] 40
+[1] "iteration number 57"
+[1] 5
+[1] 10
+[1] 15
+[1] 20
+[1] 25
+[1] 30
+[1] 35
+[1] 40
+[1] "iteration number 58"
+[1] 5
+[1] 10
+[1] 15
+[1] 20
+[1] 25
+[1] 30
+[1] 35
+[1] 40
+[1] "iteration number 59"
+[1] 5
+[1] 10
+[1] 15
+[1] 20
+[1] 25
+[1] 30
+[1] 35
+[1] 40
+[1] "iteration number 60"
+[1] 5
+[1] 10
+[1] 15
+[1] 20
+[1] 25
+[1] 30
+[1] 35
+[1] 40
+[1] "iteration number 61"
+[1] 5
+[1] 10
+[1] 15
+[1] 20
+[1] 25
+[1] 30
+[1] 35
+[1] 40
+[1] "iteration number 62"
+[1] 5
+[1] 10
+[1] 15
+[1] 20
+[1] 25
+[1] 30
+[1] 35
+[1] 40
+[1] "iteration number 63"
+[1] 5
+[1] 10
+[1] 15
+[1] 20
+[1] 25
+[1] 30
+[1] 35
+[1] 40
+[1] "iteration number 64"
+[1] 5
+[1] 10
+[1] 15
+[1] 20
+[1] 25
+[1] 30
+[1] 35
+[1] 40
+[1] "iteration number 65"
+[1] 5
+[1] 10
+[1] 15
+[1] 20
+[1] 25 is essentially just using the known covariates, including U1, U2 (notice the additional columns in cov.cols)
+gold.est <- DAPSest(gold.data, out.col = 2, trt.col = 1, caliper = 0.1,
+                weight = 0, coords.columns = c(5, 6),
+                pairsRet = TRUE, cov.cols = c(3,4 , 7: 10), cutoff = 0.1,
+                coord_dist = TRUE, caliper_type = 'PS',
+                matching_algorithm = 'greedy')
+# matching for the PS
+MatchedDataMap(x = gold.est$pairs, trt_coords = c(3, 4),
+             con_coords = c(7, 8))
+DAPS.ATT <- DAPS.est$est
+DAPS.cluster.ATT <- DAPS.est.cluster$est
+DAPS.combined.ATT <- DAPS.est.combined$est
+goldPS.ATT <- gold.est$est
+sq.error.obs <- (DAPS.ATT - goldPS.ATT) ^ 2
+sq.error.cluster <- (DAPS.cluster.ATT - goldPS.ATT) ^ 2
+sq.error.combined <- (DAPS.combined.ATT - goldPS.ATT) ^ 2
+print(round(sq.error.obs,2))
+print(round(sq.error.cluster, 2))
+print(round(sq.error.combined, 2))
+
+
+```
